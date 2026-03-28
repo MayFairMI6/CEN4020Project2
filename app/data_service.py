@@ -149,7 +149,6 @@ def parse_meeting_time(time_str):
 
     return parts[0].strip(), parts[1].strip()
 
-
 def build_weekly_grid(classes_df):
     """
     Build a weekly schedule grid from a DataFrame of classes.
@@ -232,6 +231,36 @@ def build_time_row_grid(classes_df):
 
     return time_slots, time_grid
 
+def percentage_occupied(time_grid, weekday = False):
+    """
+    Calculates the percentage of time that a room is occupied across a week
+
+    Assuming classes can be held from 8 AM to 8 PM
+    Also assuming that percentage utilization cares about days where no class uses them
+    weekday as a bool will inidcate that the function should only count Monday - Thursday
+    """
+    max_time =  16 * 60
+    max_time *= 4 if weekday else 6
+
+    total_occupied = 0
+
+    for period in time_grid:
+
+        start_time = _time_sort_key(period.split(" - ")[0])
+        end_time = _time_sort_key(period.split(" - ")[1])
+
+        class_days = 0
+        for day in time_grid[period]:
+            if weekday and (day == "F" or day == "S"):
+                continue
+            if len(time_grid[period][day]) != 0:
+                class_days += 1
+
+        total_occupied += (end_time - start_time) * class_days
+
+    percent = (total_occupied / max_time) * 100
+
+    return "{:.2f}".format(round(percent, 2))
 
 #convert '11:00 AM' to a sortable value (minutes since midnight)
 def _time_sort_key(time_str):

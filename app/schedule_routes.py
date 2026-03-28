@@ -2,7 +2,8 @@ from flask import Blueprint, render_template, request, redirect, url_for
 from .data_service import (
     get_semesters, get_rooms, get_instructors,
     get_classes_by_room, get_classes_by_instructor,
-    build_weekly_grid, build_time_row_grid, DAY_ORDER, DAY_CODES,
+    build_weekly_grid, build_time_row_grid, percentage_occupied,
+    DAY_ORDER, DAY_CODES,
 )
 
 schedule_routes = Blueprint("schedule", __name__, url_prefix="/schedule")
@@ -28,6 +29,9 @@ def room_timetable(room_name):
     classes_df = get_classes_by_room(room_name, semester)
     time_slots, time_grid = build_time_row_grid(classes_df)
 
+    percent_occupied = percentage_occupied(time_grid)
+    weekday_percent = percentage_occupied(time_grid, weekday = True)
+
     active_days = _active_days_from_time_grid(time_grid)
 
     return render_template(
@@ -38,6 +42,8 @@ def room_timetable(room_name):
         time_slots=time_slots,
         time_grid=time_grid,
         active_days=active_days,
+        percent_occupied=percent_occupied,
+        weekday_percent=weekday_percent,
         day_names=DAY_CODES,
         total_classes=len(classes_df),
     )
