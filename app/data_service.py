@@ -279,3 +279,183 @@ def _time_sort_key(time_str):
         return hour * 60 + minute
     except (IndexError, ValueError):
         return 9999
+
+
+# ============================================================
+# FEATURE 2: Search and Filter Classes
+# ============================================================
+
+def search_classes(course_code=None, instructor=None, semester=None, department=None):
+    """
+    Search and filter classes by course code, instructor, semester, or department.
+    
+    Args:
+        course_code: Partial or full course number (e.g., '4703' or 'COP4703')
+        instructor: Instructor name (partial match)
+        semester: Term code (e.g., '202501')
+        department: Department/subject code (e.g., 'COP', 'ENG')
+    
+    Returns:
+        DataFrame of matching classes
+    """
+    df = load_schedule(semester)
+    if df.empty:
+        return df
+    
+    # Filter by course code (SUBJ + CRSE_NUMB combination)
+    if course_code:
+        course_code_upper = str(course_code).upper()
+        # Try to match as "SUBJ CRSE_NUMB" or just the number part
+        course_code_parts = course_code_upper.split()
+        if len(course_code_parts) >= 2:
+            # Full format like "COP 4703"
+            subj = course_code_parts[0]
+            numb = course_code_parts[1] if len(course_code_parts) > 1 else ""
+            mask = (df['SUBJ'].astype(str).str.upper() == subj) & (df['CRSE_NUMB'].astype(str) == numb)
+        elif course_code_upper.isdigit():
+            # Just the number
+            mask = df['CRSE_NUMB'].astype(str) == course_code_upper
+        else:
+            # Check if it contains letters and numbers (like COP4703)
+            letters = ''.join(c for c in course_code_upper if c.isalpha())
+            numbers = ''.join(c for c in course_code_upper if c.isdigit())
+            if letters and numbers:
+                mask = (df['SUBJ'].astype(str).str.upper() == letters) & (df['CRSE_NUMB'].astype(str) == numbers)
+            else:
+                mask = df['CRSE_NUMB'].astype(str).str.contains(course_code_upper, case=False, na=False)
+        df = df[mask]
+    
+    # Filter by instructor name
+    if instructor:
+        instructor_upper = str(instructor).upper()
+        mask = df['INSTRUCTOR'].astype(str).str.contains(instructor_upper, case=False, na=False)
+        df = df[mask]
+    
+    # Filter by department/subject
+    if department:
+        department_upper = str(department).upper()
+        mask = df['SUBJ'].astype(str).str.upper() == department_upper
+        df = df[mask]
+    
+    return df.reset_index(drop=True)
+
+
+def get_departments():
+    """Return a sorted list of unique department/subject codes."""
+    df = load_schedule()
+    if df.empty:
+        return []
+    
+    departments = df['SUBJ'].dropna().unique()
+    return sorted(d for d in departments if d)
+
+
+def format_search_results(classes_df):
+    """Format search results as a list of dictionaries with relevant class info."""
+    results = []
+    
+    for _, row in classes_df.iterrows():
+        result = {
+            'crn': row.get('CRN', ''),
+            'term': row.get('TERM', ''),
+            'department': row.get('SUBJ', ''),
+            'course_number': row.get('CRSE_NUMB', ''),
+            'course_title': row.get('CRSE_TITLE', ''),
+            'section': row.get('CRSE_SECTION', ''),
+            'instructor': row.get('INSTRUCTOR', ''),
+            'meeting_days': row.get('MEETING_DAYS', ''),
+            'meeting_times': row.get('MEETING_TIMES', ''),
+            'meeting_room': row.get('MEETING_ROOM', ''),
+            'enrollment': row.get('ENROLLMENT', ''),
+            'course_code': f"{row.get('SUBJ', '')} {row.get('CRSE_NUMB', '')}",
+        }
+        results.append(result)
+    
+    return results
+
+
+# ============================================================
+# FEATURE 6: Compare Schedules Across Semesters
+# ============================================================
+
+def compare_schedules(semester1, semester2):
+    """
+    Compare course offerings and enrollment between two semesters.
+    
+    Args:
+        semester1: First term code (e.g., '202501')
+        semester2: Second term code (e.g., '202508')
+    
+    Returns:
+        Dictionary with comparison data
+    """
+    df1 = load_schedule(semester1)
+    df2 = load_schedule(semester2)
+    
+    sem1_label = dict(get_semesters()).get(semester1, semester1)
+    sem2_label = dict(get_semesters()).get(semester2, semester2)
+    
+    # Get unique courses in each semester
+    courses1 = set((df1['SUBJ'].astype(str) + df1['CRSE_NUMB'].astype(str)).unique()) if not df1.empty else set()
+    courses2 = set((df2['SUBJ'].astype(str) + df2['CRSE_NUMB'].astype(str)).unique()) if not df2.empty else set()
+    
+    # Categorize courses
+    only_in_sem1 = courses1 - courses2
+    only_in_sem2 = courses2 - courses1
+    in_both = courses1 & courses2
+    
+    return {
+        'semester1': semester1,
+        'semester1_label': sem1_label,
+        'semester2': semester2,
+        'semester2_label': sem2_label,
+        'df1': df1,
+        'df2': df2,
+        'only_in_sem1': sorted(only_in_sem1),
+        'only_in_sem2': sorted(only_in_sem2),
+        'in_both': sorted(in_both),
+        'stats': {
+            'total_classes_sem1': len(df1) if not df1.empty else 0,
+            'total_classes_sem2': len(df2) if not df2.empty else 0,
+            'total_courses_sem1': len(courses1),
+            'total_courses_sem2': len(courses2),
+            'enrollment_sem1': int(df1['ENROLLMENT'].sum()) if not df1.empty and 'ENROLLMENT' in df1.columns else 0,
+            'enrollment_sem2': int(df2['ENROLLMENT'].sum()) if not df2.empty and 'ENROLLMENT' in df2.columns else 0,
+        }
+    }
+
+
+def get_comparison_details(semester1, semester2, course_code):
+    """Get detailed comparison of a specific course across two semesters."""
+    df1 = load_schedule(semester1)
+    df2 = load_schedule(semester2)
+    
+    # Parse course code
+    course_parts = course_code.upper().split()
+    if len(course_parts) >= 2:
+        subj, numb = course_parts[0], course_parts[1]
+    else:
+        letters = ''.join(c for c in course_code.upper() if c.isalpha())
+        numbers = ''.join(c for c in course_code.upper() if c.isdigit())
+        subj, numb = letters, numbers
+    
+    # Filter by course
+    if not df1.empty:
+        course1_df = df1[(df1['SUBJ'].astype(str).str.upper() == subj) & (df1['CRSE_NUMB'].astype(str) == numb)]
+    else:
+        course1_df = pd.DataFrame()
+    
+    if not df2.empty:
+        course2_df = df2[(df2['SUBJ'].astype(str).str.upper() == subj) & (df2['CRSE_NUMB'].astype(str) == numb)]
+    else:
+        course2_df = pd.DataFrame()
+    
+    return {
+        'course_code': course_code,
+        'semester1_sections': format_search_results(course1_df),
+        'semester2_sections': format_search_results(course2_df),
+        'sem1_total_enrollment': int(course1_df['ENROLLMENT'].sum()) if not course1_df.empty and 'ENROLLMENT' in course1_df.columns else 0,
+        'sem2_total_enrollment': int(course2_df['ENROLLMENT'].sum()) if not course2_df.empty and 'ENROLLMENT' in course2_df.columns else 0,
+        'sem1_section_count': len(course1_df),
+        'sem2_section_count': len(course2_df),
+    }
