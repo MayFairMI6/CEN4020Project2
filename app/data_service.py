@@ -134,13 +134,24 @@ def get_classes_by_instructor(instructor, semester=None):
 
 #parse a meeting days string like 'MW' or 'TR' into a list of day codes
 def parse_meeting_days(days_str):
-    if not days_str or days_str == "nan":
+    if days_str is None:
+        return []
+    # Some imported rows contain NaN/float values for meeting days.
+    if not isinstance(days_str, str):
+        return []
+    days_str = days_str.strip()
+    if not days_str or days_str.lower() == "nan":
         return []
     return [ch for ch in days_str if ch in DAY_CODES]
 
 #parse a time string like '11:00 AM - 01:45 PM' into (start, end) strings
 def parse_meeting_time(time_str):
-    if not time_str or time_str == "nan":
+    if time_str is None:
+        return None, None
+    if not isinstance(time_str, str):
+        return None, None
+    time_str = time_str.strip()
+    if not time_str or time_str.lower() == "nan":
         return None, None
 
     parts = time_str.split(" - ")
@@ -281,6 +292,14 @@ def _time_sort_key(time_str):
         return 9999
 
 
+def _safe_enrollment_total(df):
+    """Safely sum enrollment values that may include blanks or non-numeric text."""
+    if df.empty or "ENROLLMENT" not in df.columns:
+        return 0
+    numeric = pd.to_numeric(df["ENROLLMENT"], errors="coerce").fillna(0)
+    return int(numeric.sum())
+
+
 # ============================================================
 # FEATURE 2: Search and Filter Classes
 # ============================================================
@@ -419,8 +438,8 @@ def compare_schedules(semester1, semester2):
             'total_classes_sem2': len(df2) if not df2.empty else 0,
             'total_courses_sem1': len(courses1),
             'total_courses_sem2': len(courses2),
-            'enrollment_sem1': int(df1['ENROLLMENT'].sum()) if not df1.empty and 'ENROLLMENT' in df1.columns else 0,
-            'enrollment_sem2': int(df2['ENROLLMENT'].sum()) if not df2.empty and 'ENROLLMENT' in df2.columns else 0,
+            'enrollment_sem1': _safe_enrollment_total(df1),
+            'enrollment_sem2': _safe_enrollment_total(df2),
         }
     }
 
@@ -454,8 +473,8 @@ def get_comparison_details(semester1, semester2, course_code):
         'course_code': course_code,
         'semester1_sections': format_search_results(course1_df),
         'semester2_sections': format_search_results(course2_df),
-        'sem1_total_enrollment': int(course1_df['ENROLLMENT'].sum()) if not course1_df.empty and 'ENROLLMENT' in course1_df.columns else 0,
-        'sem2_total_enrollment': int(course2_df['ENROLLMENT'].sum()) if not course2_df.empty and 'ENROLLMENT' in course2_df.columns else 0,
+        'sem1_total_enrollment': _safe_enrollment_total(course1_df),
+        'sem2_total_enrollment': _safe_enrollment_total(course2_df),
         'sem1_section_count': len(course1_df),
         'sem2_section_count': len(course2_df),
     }

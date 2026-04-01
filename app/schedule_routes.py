@@ -6,6 +6,7 @@ from .data_service import (
     DAY_ORDER, DAY_CODES,
     search_classes, get_departments, format_search_results,
     compare_schedules, get_comparison_details,
+    load_schedule, parse_meeting_days, parse_meeting_time, _time_sort_key,
 )
 
 schedule_routes = Blueprint("schedule", __name__, url_prefix="/schedule")
@@ -107,7 +108,13 @@ def _detect_time_conflicts(grid):
             for j in range(i + 1, len(classes)):
                 a = classes[i]
                 b = classes[j]
+                if _is_same_class_instance(a, b):
+                    # Duplicate rows for the same CRN should not conflict with themselves.
+                    continue
                 if _times_overlap(a["start_time"], a["end_time"], b["start_time"], b["end_time"]):
+                    if _is_cross_listed_pair(a, b):
+                        # Cross-listed UG/GR sections often share a meeting slot and should not be flagged.
+                        continue
                     conflicts.append({
                         "day": day,
                         "class_a": f"{a['subj']} {a['crse_numb']} ({a['time_display']})",
@@ -124,6 +131,151 @@ def _times_overlap(start_a, end_a, start_b, end_b):
     b_start = _time_sort_key(start_b)
     b_end = _time_sort_key(end_b)
     return a_start < b_end and b_start < a_end
+
+
+def _is_same_class_instance(class_a, class_b):
+    """Return True when two entries represent the same scheduled class (e.g., duplicated row)."""
+    crn_a = str(class_a.get("crn", "")).strip()
+    crn_b = str(class_b.get("crn", "")).strip()
+    return bool(crn_a) and crn_a == crn_b
+
+
+def _is_cross_listed_pair(class_a, class_b):
+    """Return True when two classes appear to be cross-listed UG/GR versions of the same class."""
+    title_a = str(class_a.get("crse_title", "")).strip().lower()
+    title_b = str(class_b.get("crse_title", "")).strip().lower()
+    if not title_a or title_a != title_b:
+        return False
+
+    numb_a = _course_number_as_int(class_a.get("crse_numb", ""))
+    numb_b = _course_number_as_int(class_b.get("crse_numb", ""))
+    if numb_a is None or numb_b is None:
+        return False
+
+    # Treat 4xxx as undergraduate band and 5xxx+ as graduate band.
+    return (numb_a <= 4999 < numb_b) or (numb_b <= 4999 < numb_a)
+
+
+def _course_number_as_int(value):
+    """Extract an integer course number from values like '4703' or '4703L'."""
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
+def _minutes_to_ampm(total_minutes):
+    hour_24 = total_minutes // 60
+    minute = total_minutes % 60
+    period = "AM" if hour_24 < 12 else "PM"
+    hour_12 = hour_24 % 12
+    if hour_12 == 0:
+        hour_12 = 12
+    return f"{hour_12:02d}:{minute:02d} {period}"
+
+
+def _compute_room_vacancies(classes_df, duration_minutes):
+    """Compute available time slots for each day in a room schedule."""
+    start_of_day = 8 * 60
+    end_of_day = 20 * 60
+    busy = {day: [] for day in DAY_ORDER}
+
+    for _, row in classes_df.iterrows():
+        days = parse_meeting_days(row.get("MEETING_DAYS", ""))
+        start, end = parse_meeting_time(row.get("MEETING_TIMES", ""))
+        if not days or not start or not end:
+            continue
+
+        start_m = _time_sort_key(start)
+        end_m = _time_sort_key(end)
+        if start_m >= end_m:
+            continue
+
+        for day in days:
+            if day in busy:
+                busy[day].append((start_m, end_m))
+
+    vacancies = {day: [] for day in DAY_ORDER}
+    for day in DAY_ORDER:
+        intervals = sorted(busy[day])
+        cursor = start_of_day
+
+        for start_m, end_m in intervals:
+            if start_m - cursor >= duration_minutes:
+                vacancies[day].append((cursor, start_m))
+            cursor = max(cursor, end_m)
+
+        if end_of_day - cursor >= duration_minutes:
+            vacancies[day].append((cursor, end_of_day))
+
+    formatted = {}
+    for day, slots in vacancies.items():
+        formatted[day] = [
+            f"{_minutes_to_ampm(a)} - {_minutes_to_ampm(b)}" for a, b in slots
+        ]
+    return formatted
+
+
+@schedule_routes.route("/vacancy", methods=["GET"])
+def vacancy_select():
+    """Selection page for vacancy search."""
+    semesters = get_semesters()
+    semester = request.args.get("semester", "")
+    selected_room = request.args.get("room", "")
+    duration = request.args.get("duration", "")
+    rooms = get_rooms(semester) if semester else []
+    error = request.args.get("error", "")
+    return render_template(
+        "VacancySelect.html",
+        semesters=semesters,
+        rooms=rooms,
+        selected_semester=semester,
+        selected_room=selected_room,
+        duration=duration,
+        error=error,
+    )
+
+
+@schedule_routes.route("/vacancy/results", methods=["GET"])
+def vacancy_results():
+    """Results page for vacancy search by semester, duration, and optional room."""
+    semester = (request.args.get("semester", "") or "").strip()
+    room = (request.args.get("room", "") or "").strip()
+    duration_raw = (request.args.get("duration", "") or "").strip()
+
+    if not semester or not duration_raw:
+        return redirect(url_for("schedule.vacancy_select", error="Please select semester and duration."))
+
+    try:
+        duration = int(duration_raw)
+    except ValueError:
+        return redirect(url_for("schedule.vacancy_select", error="Duration must be a number of minutes."))
+
+    if duration <= 0:
+        return redirect(url_for("schedule.vacancy_select", error="Duration must be greater than zero."))
+
+    schedule_df = load_schedule(semester)
+    rooms = [room] if room else get_rooms(semester)
+    vacancy_rows = []
+
+    for room_name in rooms:
+        room_df = schedule_df[schedule_df["MEETING_ROOM"] == room_name] if not schedule_df.empty else schedule_df
+        day_slots = _compute_room_vacancies(room_df, duration)
+        has_any = any(day_slots[d] for d in DAY_ORDER)
+        vacancy_rows.append({"room": room_name, "slots": day_slots, "has_any": has_any})
+
+    return render_template(
+        "VacancyTable.html",
+        semester=semester,
+        room_filter=room,
+        duration=duration,
+        day_names=DAY_CODES,
+        day_order=DAY_ORDER,
+        vacancy_rows=vacancy_rows,
+    )
 
 
 # ============================================================
