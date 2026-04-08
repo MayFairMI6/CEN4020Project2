@@ -1,0 +1,124 @@
+@startuml
+' Sequence(2)_MOSS_Pj2_T-01 — UC2: Search and Filter Classes
+' Author: MayfairMI6 Team
+
+skinparam DefaultFontName Arial
+skinparam SequenceArrowThickness 1.5
+skinparam ParticipantBackgroundColor #FEFEFE
+skinparam ParticipantBorderColor #444444
+skinparam NoteBackgroundColor #FFFFCC
+skinparam NoteBorderColor #AAAAAA
+skinparam SequenceLifeLineBorderColor #888888
+
+title Sequence(2)_MOSS_Pj2_T-01\nUC2: Search and Filter Classes\nAuthor: MayfairMI6 Team
+
+actor "Scheduling Committee\nMember" as SCM
+
+boundary "SearchPage\n(search.html)" as SearchPage
+control "SearchController\n(schedule_routes.search_classes_route)" as SearchCtrl
+control "DataService\n(data_service.search_classes)" as DataSvc
+database "ScheduleDatabase\n(schedule_database.csv)" as DB
+
+== Page Load ==
+
+SCM -> SearchPage : navigate to /schedule/search
+activate SearchPage
+
+SearchPage -> SearchCtrl : GET /schedule/search
+activate SearchCtrl
+
+SearchCtrl -> DataSvc : get_semesters()
+activate DataSvc
+DataSvc -> DB : read schedule_database.csv
+activate DB
+DB --> DataSvc : DataFrame
+deactivate DB
+DataSvc -> DataSvc : extract unique TERM values
+DataSvc --> SearchCtrl : [(term_code, label), ...]
+deactivate DataSvc
+
+SearchCtrl -> DataSvc : get_departments()
+activate DataSvc
+DataSvc -> DB : read schedule_database.csv (if not cached)
+activate DB
+DB --> DataSvc : DataFrame
+deactivate DB
+DataSvc -> DataSvc : extract unique SUBJ values
+DataSvc --> SearchCtrl : [department_code, ...]
+deactivate DataSvc
+
+SearchCtrl --> SearchPage : render search.html (semesters, departments, no results yet)
+deactivate SearchCtrl
+SearchPage --> SCM : display blank search form
+deactivate SearchPage
+
+== Basic Flow — Perform Search ==
+
+SCM -> SearchPage : enter search criteria\n(course_code, instructor, semester, department)
+activate SearchPage
+SCM -> SearchPage : click "Search"
+
+SearchPage -> SearchCtrl : POST /schedule/search\n(course_code, instructor, semester, department)
+activate SearchCtrl
+
+SearchCtrl -> SearchCtrl : extract search parameters from form/args
+
+alt No criteria provided (all fields empty)
+    SearchCtrl --> SearchPage : render search.html with validation message
+    SearchPage --> SCM : display "Enter at least one search value"
+else At least one criterion provided
+    SearchCtrl -> DataSvc : search_classes(course_code, instructor, semester, department)
+    activate DataSvc
+
+    DataSvc -> DataSvc : load_schedule(semester)
+    activate DataSvc
+    DataSvc -> DB : read schedule_database.csv
+    activate DB
+    DB --> DataSvc : full DataFrame
+    deactivate DB
+    DataSvc -> DataSvc : filter by TERM == semester (if provided)
+    DataSvc --> DataSvc : semester-filtered df
+    deactivate DataSvc
+
+    alt course_code provided
+        DataSvc -> DataSvc : parse course_code (SUBJ + CRSE_NUMB)
+        DataSvc -> DataSvc : apply mask on df[SUBJ] and df[CRSE_NUMB]
+    end
+
+    alt instructor provided
+        DataSvc -> DataSvc : df[INSTRUCTOR].str.contains(instructor, case=False)
+    end
+
+    alt department provided
+        DataSvc -> DataSvc : df[SUBJ].str.upper() == department
+    end
+
+    DataSvc -> DataSvc : reset_index(drop=True)
+    DataSvc --> SearchCtrl : filtered classes DataFrame
+    deactivate DataSvc
+
+    SearchCtrl -> DataSvc : format_search_results(classes_df)
+    activate DataSvc
+    DataSvc -> DataSvc : convert each row to dict\n(crn, term, dept, course_number, title,\nsection, instructor, days, times, room, enrollment)
+    DataSvc --> SearchCtrl : [result_dict, ...]
+    deactivate DataSvc
+
+    alt No results found
+        SearchCtrl --> SearchPage : render search.html\n(results=[], total_results=0)
+        SearchPage --> SCM : display "No results found" message
+    else Results found
+        SearchCtrl --> SearchPage : render search.html\n(results=[...], total_results=N)
+        deactivate SearchCtrl
+        SearchPage --> SCM : display results table\n(course title, section, instructor,\nroom, days/times, semester, enrollment)
+        deactivate SearchPage
+
+        opt Actor views class details (UC_DETAILS — extend)
+            SCM -> SearchPage : click on a class row
+            activate SearchPage
+            SearchPage --> SCM : display detailed class information
+            deactivate SearchPage
+        end
+    end
+end
+
+@enduml
