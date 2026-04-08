@@ -1,0 +1,19 @@
+User Story 1: In order to be able to track my budget, I want to see a summary of my expenses.
+
+User Story 2: As a user, I want to set spending limits for different categories so that I can monitor my expenses effectively.
+
+User Story 3: As a user, I want to categorize my expenses so that I can see where my money goes.
+
+User Story 4: As a user, I want to receive notifications when I approach my spending limit so that I can keep my budget in check.
+
+User Story 5: As a user, I want to view my spending history so that I can learn from past behavior.
+
+User Story 6: As a user, I want to export my spending data so that I can analyze it in other applications.
+
+User Story 7: As a user, I want to set recurring expenses so that I can manage my budget better.
+
+User Story 8: As a user, I want to see visual representations of my spending habits so that I can easily understand my financial situation.
+
+User Story 9: As a user, I want to be able to rename categories so that I can better reflect my spending habits.
+
+User Story 10: As a user, I want to sync my data across devices so that I can access my budget anywhere.
