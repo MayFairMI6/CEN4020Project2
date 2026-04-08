@@ -1,0 +1,152 @@
+@startuml
+' Sequence(3)_MOSS_Pj2_T-01 — UC3: Compare Semester Schedules
+
+skinparam DefaultFontName Arial
+skinparam SequenceArrowThickness 1.5
+skinparam ParticipantBackgroundColor #FEFEFE
+skinparam ParticipantBorderColor #444444
+skinparam NoteBackgroundColor #FFFFCC
+skinparam NoteBorderColor #AAAAAA
+skinparam SequenceLifeLineBorderColor #888888
+
+title Sequence(3)_MOSS_Pj2_T-01\nUC3: Compare Semester Schedules
+
+actor "Scheduling Committee\nMember" as SCM
+
+boundary "ComparisonSelectPage\n(comparison_select.html)" as SelectPage
+boundary "ComparisonResultsPage\n(comparison.html)" as ResultsPage
+boundary "ComparisonDetailsPage\n(comparison_details.html)" as DetailsPage
+control "ComparisonController\n(schedule_routes.comparison_select /\ncomparison_view)" as CompCtrl
+control "DataService\n(data_service.compare_schedules)" as DataSvc
+database "ScheduleDatabase\n(schedule_database.csv)" as DB
+
+== Page Load — Select Semesters ==
+
+SCM -> SelectPage : navigate to /schedule/comparison
+activate SelectPage
+
+SelectPage -> CompCtrl : GET /schedule/comparison
+activate CompCtrl
+
+CompCtrl -> DataSvc : get_semesters()
+activate DataSvc
+DataSvc -> DB : read schedule_database.csv
+activate DB
+DB --> DataSvc : DataFrame
+deactivate DB
+DataSvc -> DataSvc : extract sorted unique TERM values
+DataSvc --> CompCtrl : [(term_code, label), ...]
+deactivate DataSvc
+
+CompCtrl --> SelectPage : render comparison_select.html (semesters list)
+deactivate CompCtrl
+SelectPage --> SCM : display two semester dropdown fields
+deactivate SelectPage
+
+== Basic Flow — Submit Comparison ==
+
+SCM -> SelectPage : select Semester 1 from dropdown
+activate SelectPage
+SCM -> SelectPage : select Semester 2 from dropdown
+
+alt Same semester selected for both fields (Alt Flow 2a)
+    SCM -> SelectPage : click "Compare Schedules"
+    SelectPage -> CompCtrl : POST (semester1 == semester2)
+    activate CompCtrl
+    CompCtrl --> SelectPage : render comparison_select.html\nwith alert "Select two different semesters"
+    deactivate CompCtrl
+    SelectPage --> SCM : display validation alert
+else One or both semesters missing (Alt Flow 2b)
+    SCM -> SelectPage : click "Compare Schedules" (incomplete)
+    SelectPage -> CompCtrl : POST (missing semester)
+    activate CompCtrl
+    CompCtrl --> SelectPage : render comparison_select.html\nwith alert "Complete both selections"
+    deactivate CompCtrl
+    SelectPage --> SCM : display validation alert
+else Two different semesters selected
+    SCM -> SelectPage : click "Compare Schedules"
+    SelectPage -> CompCtrl : POST /schedule/comparison\n(semester1, semester2)
+    activate CompCtrl
+    CompCtrl -> CompCtrl : validate semester1 != semester2
+    CompCtrl --> SelectPage : redirect to /schedule/comparison/<sem1>/<sem2>
+    deactivate CompCtrl
+    deactivate SelectPage
+
+    ResultsPage -> CompCtrl : GET /schedule/comparison/<semester1>/<semester2>
+    activate CompCtrl
+
+    CompCtrl -> DataSvc : compare_schedules(semester1, semester2)
+    activate DataSvc
+
+    DataSvc -> DB : load_schedule(semester1)
+    activate DB
+    DB --> DataSvc : df1 (semester 1 rows)
+    deactivate DB
+
+    DataSvc -> DB : load_schedule(semester2)
+    activate DB
+    DB --> DataSvc : df2 (semester 2 rows)
+    deactivate DB
+
+    note over DataSvc
+        Alt Flow 4a: If one semester has no data,
+        its DataFrame is empty; statistics show zero
+        and all courses appear exclusive to the other.
+    end note
+
+    DataSvc -> DataSvc : courses1 = unique(SUBJ + CRSE_NUMB) in df1
+    DataSvc -> DataSvc : courses2 = unique(SUBJ + CRSE_NUMB) in df2
+    DataSvc -> DataSvc : only_in_sem1 = courses1 - courses2
+    DataSvc -> DataSvc : only_in_sem2 = courses2 - courses1
+    DataSvc -> DataSvc : in_both = courses1 ∩ courses2
+    DataSvc -> DataSvc : compute stats per semester\n(total_classes, unique_courses, total_enrollment)
+    DataSvc --> CompCtrl : comparison_data dict\n(labels, course lists, stats)
+    deactivate DataSvc
+
+    CompCtrl -> CompCtrl : augment stats with\nonly_in_1, only_in_2, in_both counts
+
+    CompCtrl --> ResultsPage : render comparison.html\n(semester labels, categorized course lists, stats)
+    deactivate CompCtrl
+
+    activate ResultsPage
+    ResultsPage --> SCM : display side-by-side comparison\n(stats table + course category lists)
+
+    == Alternative Flow 5a — View Course Detail ==
+
+    opt Actor clicks on a specific course (UC_DETAILS — extend)
+        SCM -> ResultsPage : click course code link
+        ResultsPage -> CompCtrl : GET /schedule/comparison/details/<sem1>/<sem2>/<course_code>
+        activate CompCtrl
+
+        CompCtrl -> DataSvc : get_comparison_details(semester1, semester2, course_code)
+        activate DataSvc
+
+        DataSvc -> DB : load_schedule(semester1)
+        activate DB
+        DB --> DataSvc : df1
+        deactivate DB
+
+        DataSvc -> DB : load_schedule(semester2)
+        activate DB
+        DB --> DataSvc : df2
+        deactivate DB
+
+        DataSvc -> DataSvc : parse course_code → (subj, numb)
+        DataSvc -> DataSvc : filter df1 by (SUBJ, CRSE_NUMB)
+        DataSvc -> DataSvc : filter df2 by (SUBJ, CRSE_NUMB)
+        DataSvc -> DataSvc : format_search_results for each semester
+        DataSvc -> DataSvc : compute section_count and total_enrollment per semester
+        DataSvc --> CompCtrl : details dict\n(sections_sem1, sections_sem2, enrollments, counts)
+        deactivate DataSvc
+
+        CompCtrl --> DetailsPage : render comparison_details.html
+        deactivate CompCtrl
+        activate DetailsPage
+        DetailsPage --> SCM : display section-level breakdown\n(sections, enrollment, changes summary)
+        deactivate DetailsPage
+    end
+
+    deactivate ResultsPage
+end
+
+@enduml

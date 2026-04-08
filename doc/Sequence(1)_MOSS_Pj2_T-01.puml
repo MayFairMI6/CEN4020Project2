@@ -1,0 +1,130 @@
+@startuml
+' Sequence(1)_MOSS_Pj2_T-01 — UC1: Upload Excel File
+
+skinparam DefaultFontName Arial
+skinparam SequenceArrowThickness 1.5
+skinparam ParticipantBackgroundColor #FEFEFE
+skinparam ParticipantBorderColor #444444
+skinparam NoteBackgroundColor #FFFFCC
+skinparam NoteBorderColor #AAAAAA
+skinparam SequenceLifeLineBorderColor #888888
+
+title Sequence(1)_MOSS_Pj2_T-01\nUC1: Upload Excel File
+
+actor "Scheduling Committee\nMember" as SCM
+
+boundary "UploadPage\n(home.html / upload form)" as UploadPage
+control "UploadController\n(routes.upload)" as UploadCtrl
+control "ExcelService\n(excel_service.import_excel)" as ExcelSvc
+entity "DataService\n(data_service.normalize_dataframe)" as DataSvc
+database "ScheduleDatabase\n(schedule_database.csv)" as DB
+
+== Basic Flow ==
+
+SCM -> UploadPage : navigate to upload page
+activate UploadPage
+
+SCM -> UploadPage : select Excel file (.xlsx/.xls)
+SCM -> UploadPage : submit file
+
+UploadPage -> UploadCtrl : POST /upload (file)
+activate UploadCtrl
+
+UploadCtrl -> ExcelSvc : import_excel(file)
+activate ExcelSvc
+
+ExcelSvc -> ExcelSvc : validate filename & extension
+note right: Checks .xlsx / .xls extension
+
+alt Invalid file type or empty file
+    ExcelSvc --> UploadCtrl : return validation failure
+    UploadCtrl --> UploadPage : 400 { message: "Invalid file type / empty" }
+    UploadPage --> SCM : display error message
+else Valid file
+    ExcelSvc -> ExcelSvc : compute SHA-256 hash of file bytes
+
+    ExcelSvc -> ExcelSvc : scan uploads/ folder for duplicate hash
+    note right: UC_DUP_FILE — Detect Duplicate Upload File
+
+    alt Duplicate file detected
+        ExcelSvc -> ExcelSvc : skip saving file; reuse existing filename
+        note right: duplicate_of = existing_name
+    else New file
+        ExcelSvc -> ExcelSvc : generate unique filename
+        ExcelSvc -> ExcelSvc : save bytes to uploads/
+        note right: UC_UPLOAD — persist to disk
+    end
+
+    ExcelSvc -> ExcelSvc : pd.read_excel(file_bytes)
+    note right: Parse spreadsheet into DataFrame
+
+    alt Excel content unreadable
+        ExcelSvc --> UploadCtrl : return parse failure
+        UploadCtrl --> UploadPage : 400 { message: "Invalid Excel file content" }
+        UploadPage --> SCM : display error message
+    else Readable content
+        alt DataFrame is empty
+            ExcelSvc --> UploadCtrl : return empty-file failure
+            UploadCtrl --> UploadPage : 400 { message: "Uploaded file has no rows" }
+            UploadPage --> SCM : display error message
+        else Non-empty DataFrame
+            ExcelSvc -> DataSvc : normalize_dataframe(df)
+            activate DataSvc
+            DataSvc -> DataSvc : rename columns per COLUMN_MAP
+            DataSvc -> DataSvc : strip / clean string fields
+            DataSvc --> ExcelSvc : normalized df
+            deactivate DataSvc
+
+            ExcelSvc -> ExcelSvc : normalize key columns (TERM, CRN)
+
+            ExcelSvc -> DB : read existing schedule_database.csv
+            activate DB
+            DB --> ExcelSvc : existing DataFrame (or empty if not found)
+            deactivate DB
+
+            ExcelSvc -> ExcelSvc : pd.concat(existing, new_df)
+            ExcelSvc -> ExcelSvc : drop_duplicates(subset=[CRN, TERM], keep=last)
+            note right: UC_DUP_DATA — deduplicate by CRN + semester
+
+            ExcelSvc -> DB : write merged DataFrame to schedule_database.csv
+            activate DB
+            DB --> ExcelSvc : write confirmed
+            deactivate DB
+
+            ExcelSvc --> UploadCtrl : { message, rows, saved_file, duplicate }
+            deactivate ExcelSvc
+
+            UploadCtrl --> UploadPage : 200 { message: "Data imported. File saved: ..." }
+            deactivate UploadCtrl
+
+            UploadPage --> SCM : display success confirmation
+            deactivate UploadPage
+        end
+    end
+end
+
+== Alternative Flow 6a — Remove Uploaded File ==
+
+SCM -> UploadPage : navigate to /files
+activate UploadPage
+UploadPage -> UploadPage : list files in uploads/
+UploadPage --> SCM : display file list
+
+SCM -> UploadPage : click Delete on a file
+UploadPage -> UploadCtrl : POST /delete/<filename>
+activate UploadCtrl
+UploadCtrl -> UploadCtrl : os.remove(filepath)
+UploadCtrl -> ExcelSvc : rebuild_schedule_database_from_uploads()
+activate ExcelSvc
+ExcelSvc -> DB : rebuild CSV from remaining upload files
+activate DB
+DB --> ExcelSvc : write confirmed
+deactivate DB
+ExcelSvc --> UploadCtrl : row_count
+deactivate ExcelSvc
+UploadCtrl --> UploadPage : redirect /files?message=Deleted...
+deactivate UploadCtrl
+UploadPage --> SCM : display updated file list with confirmation
+deactivate UploadPage
+
+@enduml
