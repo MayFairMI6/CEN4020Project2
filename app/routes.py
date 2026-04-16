@@ -12,9 +12,15 @@ def home():
 
 @main_routes.route("/upload", methods = ["POST"])
 def upload():
-    file = request.files["file"]
-    result = import_excel(file)
-    return jsonify(result)
+    file = request.files.get("file")
+    if file is None:
+        return jsonify({"message": "Missing file field."}), 400
+
+    try:
+        result = import_excel(file)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
 
 @main_routes.route("/export/schedule/<format>")
 def export(format):
