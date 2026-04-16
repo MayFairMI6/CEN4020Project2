@@ -3,6 +3,7 @@ from .data_service import (
     get_semesters, get_rooms, get_instructors,
     get_classes_by_room, get_classes_by_instructor,
     build_weekly_grid, build_time_row_grid, percentage_occupied,
+    get_open_slots, compare_semesters, get_room_utilization,
     DAY_ORDER, DAY_CODES,
 )
 
@@ -102,13 +103,81 @@ def suggest_open_times():
     start_time = request.args.get("start", "")
     end_time = request.args.get("end", "")
 
-    if not semester:
-        return redirect(url_for("schedule.room_select"))
+    if not semester or not room:
+        return redirect(url_for("schedule.room_suggest"))
 
     semesters = get_semesters()
     semester_label = dict(semesters).get(semester, semester)
 
-    return render_template("suggest_open.html")
+    occupied, open_by_day = get_open_slots(
+        room, semester,
+        start_filter=start_time if start_time else None,
+        end_filter=end_time if end_time else None,
+    )
+
+    active_days = [d for d in DAY_ORDER if any(d in booked for booked in occupied.values()) or open_by_day[d]]
+
+    return render_template(
+        "suggest_open.html",
+        room=room,
+        semester=semester,
+        semester_label=semester_label,
+        start_time=start_time,
+        end_time=end_time,
+        occupied=occupied,
+        open_by_day=open_by_day,
+        active_days=active_days,
+        day_names=DAY_CODES,
+        all_slots=sorted(occupied.keys()),
+    )
+
+
+@schedule_routes.route("/compare", methods=["GET"])
+def semester_compare():
+    semesters = get_semesters()
+    sem1 = request.args.get("sem1", "")
+    sem2 = request.args.get("sem2", "")
+
+    only_in_sem1, in_both, only_in_sem2 = [], [], []
+    compared = False
+    sem1_label = sem2_label = ""
+
+    if sem1 and sem2 and sem1 != sem2:
+        sem_map = dict(semesters)
+        sem1_label = sem_map.get(sem1, sem1)
+        sem2_label = sem_map.get(sem2, sem2)
+        only_in_sem1, in_both, only_in_sem2 = compare_semesters(sem1, sem2)
+        compared = True
+
+    return render_template(
+        "compare.html",
+        semesters=semesters,
+        sem1=sem1,
+        sem2=sem2,
+        sem1_label=sem1_label,
+        sem2_label=sem2_label,
+        only_in_sem1=only_in_sem1,
+        in_both=in_both,
+        only_in_sem2=only_in_sem2,
+        compared=compared,
+    )
+
+
+@schedule_routes.route("/utilization", methods=["GET"])
+def utilization():
+    semesters = get_semesters()
+    semester = request.args.get("semester", "")
+    semester_label = dict(semesters).get(semester, semester) if semester else ""
+
+    stats = get_room_utilization(semester) if semester else []
+
+    return render_template(
+        "utilization.html",
+        semesters=semesters,
+        selected_semester=semester,
+        semester_label=semester_label,
+        stats=stats,
+    )
 
 def _active_days_from_time_grid(time_grid):
     """Determine which days have at least one class across all time slots."""

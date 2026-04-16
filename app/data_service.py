@@ -262,6 +262,137 @@ def percentage_occupied(time_grid, weekday = False):
 
     return "{:.2f}".format(round(percent, 2))
 
+def get_departments(semester=None):
+    """Return sorted list of unique subject codes (departments)."""
+    df = load_schedule(semester)
+    if df.empty or "SUBJ" not in df.columns:
+        return []
+    return sorted(df["SUBJ"].dropna().unique())
+
+
+def search_classes(semester=None, query=None, subj=None, instructor=None):
+    """Search/filter classes by free-text query, subject, or instructor."""
+    df = load_schedule(semester)
+    if df.empty:
+        return df
+
+    if query:
+        q = query.lower()
+        str_cols = {
+            "SUBJ": df.get("SUBJ", pd.Series(dtype=str)),
+            "CRSE_NUMB": df.get("CRSE_NUMB", pd.Series(dtype=str)),
+            "CRSE_TITLE": df.get("CRSE_TITLE", pd.Series(dtype=str)),
+            "INSTRUCTOR": df.get("INSTRUCTOR", pd.Series(dtype=str)),
+        }
+        mask = pd.Series(False, index=df.index)
+        for col_series in str_cols.values():
+            mask = mask | col_series.fillna("").astype(str).str.lower().str.contains(q, regex=False)
+        df = df[mask]
+
+    if subj:
+        df = df[df["SUBJ"].str.upper() == subj.upper()]
+
+    if instructor:
+        df = df[df["INSTRUCTOR"].fillna("").str.lower().str.contains(instructor.lower(), regex=False)]
+
+    return df
+
+
+def get_open_slots(room, semester, start_filter=None, end_filter=None):
+    """
+    Return (occupied, open_by_day) for a room in a semester.
+
+    occupied   – {time_display: [day_codes where room is booked]}
+    open_by_day – {day_code: [time_display strings where room is free]}
+
+    start_filter / end_filter are optional strings in HH:MM (24-hour) format.
+    Only time slots whose range overlaps the requested window are considered.
+    """
+    df = get_classes_by_room(room, semester)
+    time_slots, time_grid = build_time_row_grid(df)
+
+    def _hhmm_to_min(hhmm):
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    filter_start = _hhmm_to_min(start_filter) if start_filter else 0
+    filter_end = _hhmm_to_min(end_filter) if end_filter else 24 * 60
+
+    occupied = {}
+    for slot in time_slots:
+        slot_start = _time_sort_key(slot.split(" - ")[0])
+        slot_end = _time_sort_key(slot.split(" - ")[1])
+        if slot_end <= filter_start or slot_start >= filter_end:
+            continue
+        booked_days = [day for day in DAY_ORDER if time_grid[slot][day]]
+        occupied[slot] = booked_days
+
+    open_by_day = {day: [] for day in DAY_ORDER}
+    for slot, booked_days in occupied.items():
+        for day in DAY_ORDER:
+            if day not in booked_days:
+                open_by_day[day].append(slot)
+
+    return occupied, open_by_day
+
+
+def compare_semesters(sem1, sem2):
+    """
+    Compare two semesters.
+
+    Returns (only_in_sem1, in_both, only_in_sem2) where each element is a
+    list of dicts with keys: subj, crse_numb, crse_title.
+    """
+    df1 = load_schedule(sem1)
+    df2 = load_schedule(sem2)
+
+    def _course_set(df):
+        if df.empty:
+            return {}
+        rows = {}
+        for _, row in df[["SUBJ", "CRSE_NUMB", "CRSE_TITLE"]].drop_duplicates().iterrows():
+            key = (
+                str(row.get("SUBJ", "") or "").strip().upper(),
+                str(row.get("CRSE_NUMB", "") or "").strip(),
+            )
+            rows[key] = {
+                "subj": key[0],
+                "crse_numb": key[1],
+                "crse_title": str(row.get("CRSE_TITLE", "") or "").strip(),
+            }
+        return rows
+
+    courses1 = _course_set(df1)
+    courses2 = _course_set(df2)
+
+    keys1 = set(courses1)
+    keys2 = set(courses2)
+
+    only_in_sem1 = sorted([courses1[k] for k in keys1 - keys2], key=lambda x: (x["subj"], x["crse_numb"]))
+    in_both = sorted([courses1[k] for k in keys1 & keys2], key=lambda x: (x["subj"], x["crse_numb"]))
+    only_in_sem2 = sorted([courses2[k] for k in keys2 - keys1], key=lambda x: (x["subj"], x["crse_numb"]))
+
+    return only_in_sem1, in_both, only_in_sem2
+
+
+def get_room_utilization(semester):
+    """Return a list of utilization stats dicts for every room in a semester, sorted by % descending."""
+    rooms = get_rooms(semester)
+    stats = []
+    for room in rooms:
+        df = get_classes_by_room(room, semester)
+        _, time_grid = build_time_row_grid(df)
+        pct = float(percentage_occupied(time_grid))
+        weekday_pct = float(percentage_occupied(time_grid, weekday=True))
+        stats.append({
+            "room": room,
+            "total_classes": len(df),
+            "percent": pct,
+            "weekday_percent": weekday_pct,
+        })
+    return sorted(stats, key=lambda x: x["percent"], reverse=True)
+
+
 #convert '11:00 AM' to a sortable value (minutes since midnight)
 def _time_sort_key(time_str):
     try:
