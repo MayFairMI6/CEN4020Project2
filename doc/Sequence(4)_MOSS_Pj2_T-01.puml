@@ -1,0 +1,157 @@
+@startuml
+' Sequence(4)_MOSS_Pj2_T-01 — UC4: View Instructor Schedule
+
+skinparam DefaultFontName Arial
+skinparam SequenceArrowThickness 1.5
+skinparam ParticipantBackgroundColor #FEFEFE
+skinparam ParticipantBorderColor #444444
+skinparam NoteBackgroundColor #FFFFCC
+skinparam NoteBorderColor #AAAAAA
+skinparam SequenceLifeLineBorderColor #888888
+
+title Sequence(4)_MOSS_Pj2_T-01\nUC4: View Instructor Schedule
+
+actor "Scheduling Committee\nMember" as SCM
+
+boundary "HomePage\n(home.html)" as HomePage
+boundary "InstructorSelectPage\n(instructor_select.html)" as SelectPage
+boundary "InstructorSchedulePage\n(instructor_schedule.html)" as SchedulePage
+control "ScheduleController\n(schedule_routes.instructor_select /\ninstructor_schedule)" as SchedCtrl
+control "ConflictDetector\n(schedule_routes._detect_time_conflicts)" as ConflictCtrl
+control "DataService\n(data_service)" as DataSvc
+database "ScheduleDatabase\n(schedule_database.csv)" as DB
+
+== Step 1 — Navigate to Instructor Weekly Schedule ==
+
+SCM -> HomePage : navigate to home page
+activate HomePage
+HomePage --> SCM : display navigation links
+deactivate HomePage
+
+SCM -> SelectPage : click "Instructor Weekly Schedule"
+activate SelectPage
+
+SelectPage -> SchedCtrl : GET /schedule/instructor
+activate SchedCtrl
+
+SchedCtrl -> DataSvc : get_semesters()
+activate DataSvc
+DataSvc -> DB : read schedule_database.csv
+activate DB
+DB --> DataSvc : DataFrame
+deactivate DB
+DataSvc -> DataSvc : extract sorted unique TERM values
+DataSvc --> SchedCtrl : [(term_code, label), ...]
+deactivate DataSvc
+
+SchedCtrl --> SelectPage : render instructor_select.html\n(semesters dropdown, empty instructor dropdown)
+deactivate SchedCtrl
+SelectPage --> SCM : display semester dropdown
+deactivate SelectPage
+
+== Step 2 — Select Semester ==
+
+SCM -> SelectPage : select a semester from dropdown
+activate SelectPage
+
+SelectPage -> SchedCtrl : GET /schedule/instructor?semester=<term_code>
+activate SchedCtrl
+
+SchedCtrl -> DataSvc : get_instructors(semester)
+activate DataSvc
+DataSvc -> DB : load_schedule(semester)
+activate DB
+DB --> DataSvc : semester-filtered DataFrame
+deactivate DB
+
+alt No instructors in selected semester (Exception)
+    DataSvc --> SchedCtrl : [] (empty instructor list)
+    SchedCtrl --> SelectPage : render instructor_select.html\n(empty instructor dropdown)
+    deactivate SchedCtrl
+    SelectPage --> SCM : display empty instructor dropdown;\nactor must choose a different semester
+    deactivate SelectPage
+else Instructors available
+    DataSvc -> DataSvc : extract unique non-null INSTRUCTOR values
+    DataSvc --> SchedCtrl : [instructor_name, ...]
+    deactivate DataSvc
+
+    SchedCtrl --> SelectPage : render instructor_select.html\n(semesters, instructor list, selected_semester)
+    deactivate SchedCtrl
+    SelectPage --> SCM : display populated instructor dropdown
+    deactivate SelectPage
+
+    == Step 3 — Select Instructor and View Schedule ==
+
+    SCM -> SelectPage : select an instructor from dropdown
+    activate SelectPage
+    SCM -> SelectPage : click "View Schedule"
+
+    SelectPage -> SchedCtrl : GET /schedule/instructor/<instructor_name>?semester=<term_code>
+    activate SchedCtrl
+
+    SchedCtrl -> DataSvc : get_classes_by_instructor(instructor_name, semester)
+    activate DataSvc
+    DataSvc -> DB : load_schedule(semester)
+    activate DB
+    DB --> DataSvc : semester-filtered DataFrame
+    deactivate DB
+    DataSvc -> DataSvc : filter rows where INSTRUCTOR == instructor_name
+    DataSvc --> SchedCtrl : classes DataFrame
+    deactivate DataSvc
+
+    alt No classes with valid days/times (Exception)
+        SchedCtrl --> SchedulePage : render instructor_schedule.html\n(message: "No classes scheduled for this instructor in this semester")
+        activate SchedulePage
+        SchedulePage --> SCM : display "no classes" message
+        deactivate SchedulePage
+    else Classes found
+        SchedCtrl -> DataSvc : build_weekly_grid(classes_df)
+        activate DataSvc
+        DataSvc -> DataSvc : for each row: parse_meeting_days(MEETING_DAYS)
+        DataSvc -> DataSvc : for each row: parse_meeting_time(MEETING_TIMES)
+        DataSvc -> DataSvc : group entries by day code into grid dict
+        DataSvc -> DataSvc : sort each day's entries by start_time
+        DataSvc --> SchedCtrl : grid {day_code: [class_dict, ...]}
+        deactivate DataSvc
+
+        SchedCtrl -> DataSvc : build_time_row_grid(classes_df)
+        activate DataSvc
+        DataSvc -> DataSvc : build 2-D grid {time_display: {day_code: [class_dict]}}
+        DataSvc -> DataSvc : sort time_slots by start time
+        DataSvc --> SchedCtrl : (time_slots, time_grid)
+        deactivate DataSvc
+
+        SchedCtrl -> ConflictCtrl : _detect_time_conflicts(grid)
+        activate ConflictCtrl
+
+        note over ConflictCtrl
+            For each day, compare every pair of classes:
+            • Skip if same CRN (same class instance)
+            • Skip if cross-listed UG/GR pair (same title,
+              one in 4xxx range and one in 5xxx+ range)
+            • Flag overlap if start_A < end_B AND start_B < end_A
+        end note
+
+        ConflictCtrl -> ConflictCtrl : for each day: compare all class pairs
+        ConflictCtrl -> ConflictCtrl : _is_same_class_instance(a, b)
+        ConflictCtrl -> ConflictCtrl : _is_cross_listed_pair(a, b)
+        ConflictCtrl -> ConflictCtrl : _times_overlap(start_a, end_a, start_b, end_b)
+        ConflictCtrl --> SchedCtrl : conflicts [{day, class_a, class_b}, ...]
+        deactivate ConflictCtrl
+
+        SchedCtrl --> SchedulePage : render instructor_schedule.html\n(time_grid, time_slots, active_days,\ntotal_classes, conflicts)
+        deactivate SchedCtrl
+        activate SchedulePage
+
+        alt Conflicts detected (Alternative Flow)
+            SchedulePage --> SCM : display weekly timetable grid +\nconflict warning section\n(conflicting class blocks highlighted red)
+        else No conflicts
+            SchedulePage --> SCM : display weekly timetable grid +\ntotal class count (no conflict warning)
+        end
+
+        deactivate SchedulePage
+        deactivate SelectPage
+    end
+end
+
+@enduml
